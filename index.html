@@ -1148,7 +1148,8 @@ button{background:linear-gradient(#483722,#2b2116);border-color:#94723e66}button
 <div class="field full"><input id="cover" type="hidden"><label for="coverAddress"><span>Adresse de la couverture</span></label><input id="coverAddress" type="url" placeholder="https://…"><div class="cover-actions"><button id="findCover" type="button">Chercher avec l’ISBN</button><label class="cover-upload"><span>Choisir une image depuis mon PC</span><input id="coverUpload" type="file" accept="image/jpeg,image/png,image/webp"></label></div><p id="coverStatus" role="status"></p><img id="coverPreview" alt="Aperçu de la couverture" hidden></div>
 <label class="field full"><span>Résumé</span><textarea id="overview"></textarea></label><label class="field full"><span>Mon avis et mes notes</span><textarea id="review" placeholder="Ce que j’ai aimé, ressenti, retenu…"></textarea></label>
 </div><p id="formError" role="alert"></p><div class="modal-actions"><button type="button" id="delete">Supprimer</button><button type="submit" id="save">Enregistrer dans mon carnet</button></div></form></dialog>
-<script type="module">import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {getFirestore,collection,onSnapshot,addDoc,setDoc,deleteDoc,doc,serverTimestamp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 const firebaseConfig = {
       apiKey: "AIzaSyA9FZWQIVnjmIymK-Dc5x0MyPlbNMr0kj0",
@@ -1163,7 +1164,7 @@ const $=id=>document.getElementById(id), esc=v=>String(v??"").replace(/[&<>"']/g
 const safeURL=v=>{if(typeof v==="string"&&v.length<=700000&&/^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(v))return v;try{const u=new URL(v);return ["https:","http:"].includes(u.protocol)?u.href:""}catch{return ""}};
 const fields=["title","author","genre","status","pages","startDate","endDate","rating","publicationYear","isbn","cover","overview","review"];
 let books=[], tab="Tous", editing=null, ready=false, busy=false, lookupGeneration=0;
-let genreTask=Promise.resolve();
+let genreTask=Promise.resolve(),summaryTask=Promise.resolve();
 const statuses=["Tous","Lu","En cours","À lire","Abandonné","Statistiques"];
 const labels={"Lu":"Lus","Abandonné":"Abandonnés"};
 statuses.forEach(s=>{const b=document.createElement("button");b.textContent=labels[s]||s;b.onclick=()=>{tab=s;render()};b.dataset.tab=s;$("tabs").append(b)});
@@ -1192,7 +1193,7 @@ function render(){
  wireCards($("content"));$("latestList").innerHTML=[...books].sort((a,b)=>timestamp(b)-timestamp(a)).slice(0,5).map(b=>'<button class="latest-item" data-id="'+esc(b.id)+'">'+cover(b)+'<div><strong>'+esc(b.title)+'</strong><span>'+esc(b.author)+'</span><span>'+esc(b.status)+'</span></div></button>').join("")||'<p>Ta bibliothèque t’attend.</p>';wireCards($("latestList"));
 }
 function updatePreview(){const url=safeURL($("cover").value);$("coverAddress").value=url.startsWith("data:")?"":url;$("coverPreview").onerror=()=>{$("coverPreview").hidden=true;$("coverStatus").textContent="Cette couverture n’est pas disponible. Tu peux choisir une image."};$("coverPreview").hidden=!url;if(url)$("coverPreview").src=url}
-function openBook(b=null){lookupGeneration++;editing=b?.id||null;$("form").reset();fields.forEach(f=>$(f).value=b?.[f]??(f==="status"?(["Lu","En cours","À lire","Abandonné"].includes(tab)?tab:"À lire"):f==="rating"?0:""));$("modalTitle").textContent=b?"Les pages de ce roman":"Ajouter un roman";$("delete").hidden=!b;$("lookupStatus").textContent="";$("results").innerHTML="";$("formError").textContent="";$("coverUpload").value="";$("coverStatus").textContent="";$("genreStatus").textContent="";genreTask=Promise.resolve();updatePreview();$("dialog").showModal()}
+function openBook(b=null){lookupGeneration++;editing=b?.id||null;$("form").reset();fields.forEach(f=>$(f).value=b?.[f]??(f==="status"?(["Lu","En cours","À lire","Abandonné"].includes(tab)?tab:"À lire"):f==="rating"?0:""));$("modalTitle").textContent=b?"Les pages de ce roman":"Ajouter un roman";$("delete").hidden=!b;$("lookupStatus").textContent="";$("results").innerHTML="";$("formError").textContent="";$("coverUpload").value="";$("coverStatus").textContent="";$("genreStatus").textContent="";genreTask=Promise.resolve();summaryTask=Promise.resolve();updatePreview();$("dialog").showModal();if(b&&!String(b.overview||"").trim())summaryTask=supplementSummary({title:b.title,authors:(b.author||"").split(",").map(a=>a.trim()).filter(Boolean),industryIdentifiers:b.isbn?[{identifier:b.isbn}]:[]},lookupGeneration)}
 function close(){lookupGeneration++;$("dialog").close()}
 $("add").onclick=()=>openBook();$("close").onclick=close;$("coverAddress").oninput=()=>{$("cover").value=$("coverAddress").value;updatePreview()};
 $("coverUpload").onchange=async()=>{
@@ -1233,7 +1234,7 @@ function errorMessage(e){return e.code==="permission-denied"?"Firebase refuse l�
 function lock(value){busy=value;$("save").disabled=value;$("delete").disabled=value;$("close").disabled=value}
 $("dialog").addEventListener("cancel",e=>{if(busy)e.preventDefault()});
 $("form").onsubmit=async e=>{e.preventDefault();if(busy)return;$("formError").textContent="";if(!ready){$("formError").textContent="La synchronisation Firebase n’est pas disponible.";return}
- lock(true);await genreTask;lock(false);
+ lock(true);await Promise.all([genreTask,summaryTask]);lock(false);
  const data=Object.fromEntries(fields.map(f=>[f,$(f).value.trim()]));["pages","rating"].forEach(f=>data[f]=Number(data[f])||0);
  if(data.startDate&&data.endDate&&data.endDate<data.startDate){$("formError").textContent="La fin de lecture doit être après le début.";return}
  data.cover=safeURL(data.cover);
@@ -1284,6 +1285,43 @@ async function supplementGenre(v,generation){
  if(generation!==lookupGeneration||$("genre").value!==initial)return;
  const suggested=genreFromSummary(v.description);if(suggested){$("genre").value=suggested;$("genreStatus").textContent="Genre suggéré automatiquement d’après le résumé."}
  else $("genreStatus").textContent="Aucun genre précis trouvé pour cette fiche.";
+}
+function sameSummaryBook(v,candidate){
+ const ids=x=>(x.industryIdentifiers||[]).map(i=>String(i.identifier).replace(/[ -]/g,""));
+ if(ids(v).some(id=>ids(candidate).includes(id)))return true;
+ const title=x=>searchText(x).replace(/\b(?:le|la|les|l|du|de|des|the|a|an)\b/g," ").replace(/\s+/g," ").trim();
+ const a=title(v.title),b=title(candidate.title);
+ if(!a||!b||!(a===b||(Math.min(a.length,b.length)>=10&&((' '+a+' ').includes(' '+b+' ')||(' '+b+' ').includes(' '+a+' ')))))return false;
+ const number=x=>String(x||"").match(/(?:tome|volume|vol\.?|t\.)\s*(\d+)/i)?.[1];
+ if(number(v.title)&&number(candidate.title)&&number(v.title)!==number(candidate.title))return false;
+ return (v.authors||[]).some(author=>(candidate.authors||[]).some(other=>normaliseAuthor(author)===normaliseAuthor(other)));
+}
+const summaryCache=new Map();
+async function findFrenchSummary(v){
+ const direct=frenchSummary(v.description);if(direct)return {text:direct,source:v.source||"Catalogue"};
+ if(!v.title)return null;
+ const key=searchText(v.title)+"|"+(v.authors||[]).map(normaliseAuthor).join("|");if(summaryCache.has(key))return summaryCache.get(key);
+ const queries=[v.title+(v.authors?.[0]?" "+v.authors[0]:""),v.title];
+ const responses=await Promise.allSettled([...new Set(queries)].map(q=>fetchBookJSON("https://www.googleapis.com/books/v1/volumes?"+new URLSearchParams({q,maxResults:"40",langRestrict:"fr",key:GOOGLE_BOOKS_API_KEY}))));
+ for(const response of responses){if(response.status!=="fulfilled")continue;
+  for(const item of response.value.items||[]){const candidate=item.volumeInfo||{};if(candidate.language!=="fr"||!sameSummaryBook(v,candidate))continue;
+   const text=frenchSummary(candidate.description);if(text){const result={text,source:"Google Books · autre fiche du même roman"};summaryCache.set(key,result);return result}
+  }
+ }
+ const works=new Set();if(/^\/works\/OL\d+W$/.test(v.workKey||""))works.add(v.workKey);
+ if(!works.size&&v.authors?.length){try{const data=await fetchBookJSON("https://openlibrary.org/search.json?"+new URLSearchParams({title:v.title,author:v.authors[0],limit:"5",fields:"key,title,author_name"}));for(const d of data.docs||[])if(sameSummaryBook(v,{title:d.title,authors:d.author_name}))works.add(d.key)}catch{}}
+ for(const work of [...works].slice(0,2)){if(!/^\/works\/OL\d+W$/.test(work))continue;
+  try{const data=await fetchBookJSON("https://openlibrary.org"+work+".json");const text=frenchSummary(typeof data.description==="string"?data.description:data.description?.value);if(text){const result={text,source:"Open Library"};summaryCache.set(key,result);return result}}catch{}
+ }
+ return null;
+}
+async function supplementSummary(v,generation){
+ if($("overview").value.trim())return;
+ $("lookupStatus").textContent="Recherche automatique d’un résumé français…";
+ try{const result=await findFrenchSummary(v);if(generation!==lookupGeneration||$("overview").value.trim())return;
+  if(result){$("overview").value=result.text;$("lookupStatus").textContent="Résumé français récupéré · "+result.source;if(!$("genre").value){const genre=genreFromSummary(result.text);if(genre){$("genre").value=genre;$("genreStatus").textContent="Genre suggéré automatiquement d’après le résumé."}}}
+  else $("lookupStatus").textContent="Aucun résumé français trouvé dans les catalogues pour ce roman.";
+ }catch{if(generation===lookupGeneration)$("lookupStatus").textContent="La recherche du résumé a échoué. Tu peux réessayer."}
 }
 function googleRomanItems(items){return items.filter(i=>i.volumeInfo?.language==="fr").map(i=>({...i.volumeInfo,description:frenchSummary(i.volumeInfo.description),source:"Google Books",editionChosen:true})).sort((a,b)=>editionYear(b.publishedDate)-editionYear(a.publishedDate))}
 function openLibraryEditionItems(docs){return docs.flatMap(d=>(d.editions?.docs||[]).filter(e=>(e.language||[]).includes("fre")).map(e=>({title:e.title||d.title,authors:d.author_name||[],publisher:(e.publisher||[]).join(", "),publishedDate:String(editionYear(Array.isArray(e.publish_date)?e.publish_date.join(" "):e.publish_date)||""),workKey:d.key,editionKey:e.key,editionChosen:true,source:"Open Library",categories:d.subject||[],description:"",imageLinks:{thumbnail:e.cover_i?"https://covers.openlibrary.org/b/id/"+e.cover_i+"-M.jpg":""},industryIdentifiers:(e.isbn||[]).filter(x=>String(x).length===13).slice(0,1).map(x=>({type:"ISBN_13",identifier:x}))}))).sort((a,b)=>editionYear(b.publishedDate)-editionYear(a.publishedDate))}
@@ -1344,7 +1382,7 @@ function displayRomanChoices(items){
    const btn=document.createElement("button");btn.type="button";btn.className="tmdb-choice";
    const url=resultCover(v);
    btn.innerHTML=(url?'<img src="'+esc(url)+'" alt="">':"")+'<strong>'+esc(v.title)+(v.subtitle?'<small>'+esc(v.subtitle)+'</small>':'')+'</strong><p>'+esc((v.authors||[]).join(", "))+'</p><small>'+esc(v.publisher||v.source)+" · "+esc(v.editionChosen?v.publishedDate||"Date inconnue":v.workKey?"Choisir une édition française":v.publishedDate||"")+'</small>';
-   btn.onclick=async()=>{
+   btn.onclick=()=>{summaryTask=(async()=>{
 
     const chosenGeneration=++lookupGeneration;
     $("title").value=v.title||q;$("author").value=(v.authors||[]).join(", ");$("pages").value=v.pageCount||"";
@@ -1363,8 +1401,9 @@ function displayRomanChoices(items){
       if(description&&!$("overview").value){$("overview").value=description;$("lookupStatus").textContent="Informations et résumé français récupérés."}
      }catch{}
     }
+    if(chosenGeneration===lookupGeneration&&!$("overview").value.trim())await supplementSummary(v,chosenGeneration);
 
-   };const group=document.createElement("div");group.className="edition-result";group.append(btn);$("results").append(group);bindCoverErrors(group);
+   })();};const group=document.createElement("div");group.className="edition-result";group.append(btn);$("results").append(group);bindCoverErrors(group);
    if(v.workKey){const more=document.createElement("button");more.type="button";more.textContent="Autres éditions de « "+v.title+" »";more.className="edition-more";more.onclick=()=>showFrenchEditions(v);group.append(more)}
   });
 }
