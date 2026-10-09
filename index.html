@@ -1288,20 +1288,39 @@ async function supplementGenre(v,generation){
 function googleRomanItems(items){return items.filter(i=>i.volumeInfo?.language==="fr").map(i=>({...i.volumeInfo,description:frenchSummary(i.volumeInfo.description),source:"Google Books",editionChosen:true})).sort((a,b)=>editionYear(b.publishedDate)-editionYear(a.publishedDate))}
 function openLibraryEditionItems(docs){return docs.flatMap(d=>(d.editions?.docs||[]).filter(e=>(e.language||[]).includes("fre")).map(e=>({title:e.title||d.title,authors:d.author_name||[],publisher:(e.publisher||[]).join(", "),publishedDate:String(editionYear(Array.isArray(e.publish_date)?e.publish_date.join(" "):e.publish_date)||""),workKey:d.key,editionKey:e.key,editionChosen:true,source:"Open Library",categories:d.subject||[],description:"",imageLinks:{thumbnail:e.cover_i?"https://covers.openlibrary.org/b/id/"+e.cover_i+"-M.jpg":""},industryIdentifiers:(e.isbn||[]).filter(x=>String(x).length===13).slice(0,1).map(x=>({type:"ISBN_13",identifier:x}))}))).sort((a,b)=>editionYear(b.publishedDate)-editionYear(a.publishedDate))}
 const GOOGLE_BOOKS_API_KEY = "AIzaSyBu5zjvjUZFh4R4FqwWaVZ5fHFgYQMc2bM";
+function searchText(value){return String(value||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim()}
 async function searchRomanSources(q){
- let googleFailure=null;
- try{
-  const query=/^(?:97[89])?\d{9}[\dXx]$/.test(q.replace(/[ -]/g,""))?"isbn:"+q.replace(/[ -]/g,""):"intitle:"+q;
-  const responses=await Promise.allSettled(["relevance","newest"].map(orderBy=>fetchBookJSON("https://www.googleapis.com/books/v1/volumes?"+new URLSearchParams({q:query,langRestrict:"fr",printType:"books",maxResults:"40",orderBy,key:GOOGLE_BOOKS_API_KEY}))));
-  const volumes=new Map();responses.forEach(r=>{if(r.status==="fulfilled")(r.value.items||[]).forEach(i=>volumes.set(i.id,i))});
-  const items=googleRomanItems([...volumes.values()]);if(items.length)return {source:"Google Books",items};
-  const failure=responses.find(r=>r.status==="rejected");if(failure)googleFailure=failure.reason.message;
-
- }catch(e){googleFailure=e.message}
- try{
-  const data=await fetchBookJSON("https://openlibrary.org/search.json?"+new URLSearchParams({q:q.replace(/["\\]/g," ")+" language:fre",lang:"fr",limit:"40",fields:"key,title,author_name,subject,editions,editions.key,editions.title,editions.cover_i,editions.publish_date,editions.publisher,editions.isbn,editions.language","editions.sort":"publish_date desc"}));
-  return {source:"Open Library",items:openLibraryEditionItems(data.docs||[])};
- }catch(e){throw new Error((googleFailure?"Google Books : "+googleFailure+". ":"")+"Open Library : "+e.message)}
+ const compact=q.replace(/[ -]/g,""),isISBN=/^(?:97[89])?\d{9}[\dXx]$/.test(compact);
+ const googleQuery=(query,orderBy="relevance")=>fetchBookJSON("https://www.googleapis.com/books/v1/volumes?"+new URLSearchParams({q:query,langRestrict:"fr",printType:"books",maxResults:"40",orderBy,key:GOOGLE_BOOKS_API_KEY}));
+ const queries=isISBN?[["isbn:"+compact,"relevance"]]:[["intitle:"+q,"relevance"],["intitle:"+q,"newest"],[q,"relevance"],["inauthor:"+q,"relevance"]];
+ const libraryPromise=fetchBookJSON("https://openlibrary.org/search.json?"+new URLSearchParams({q:(isISBN?"isbn:"+compact:q.replace(/["\\]/g," "))+" language:fre",lang:"fr",limit:"40",fields:"key,title,author_name,subject,editions,editions.key,editions.title,editions.cover_i,editions.publish_date,editions.publisher,editions.isbn,editions.language","editions.sort":"publish_date desc"})).then(data=>({items:openLibraryEditionItems(data.docs||[])}),error=>({error}));
+ const responses=await Promise.allSettled(queries.map(([query,order])=>googleQuery(query,order)));
+ const volumes=new Map(),relatedAuthors=new Set();
+ const collect=results=>results.forEach(r=>{if(r.status==="fulfilled")(r.value.items||[]).forEach(i=>volumes.set(i.id,i))});collect(responses);
+ if(!isISBN){
+  // A saga name can live in the description rather than in a volume's title.
+  // Expand a recurring author from the first relevant French results to find other volumes.
+  const broad=responses[2]?.status==="fulfilled"?(responses[2].value.items||[]).filter(i=>i.volumeInfo?.language==="fr").map(i=>i.volumeInfo):[];
+  const counts=new Map();broad.slice(0,5).forEach(v=>(v.authors||[]).forEach(author=>counts.set(author,(counts.get(author)||0)+1)));
+  counts.forEach((count,author)=>{if(count>=2)relatedAuthors.add(author)});
+  for(const i of volumes.values())for(const author of i.volumeInfo?.authors||[])if(searchText(author)===searchText(q))relatedAuthors.add(author);
+  const authors=[...relatedAuthors].slice(0,2);
+  if(authors.length)collect(await Promise.allSettled(authors.flatMap(author=>["relevance","newest"].map(order=>googleQuery('inauthor:'+author.replace(/"/g,""),order)))));
+ }
+ const library=await libraryPromise;
+ const combined=[...googleRomanItems([...volumes.values()]),...(library.items||[])];
+ const items=[],seen=new Set();
+ for(const v of combined){
+  const ids=(v.industryIdentifiers||[]).map(i=>String(i.identifier).replace(/[ -]/g,"").toUpperCase());
+  if(isISBN&&!ids.includes(compact.toUpperCase()))continue;
+  const key=ids.find(id=>id.length===13)||ids[0]||searchText(v.title)+"|"+(v.authors||[]).map(searchText).join("|")+"|"+v.publisher+"|"+v.publishedDate;
+  if(seen.has(key))continue;seen.add(key);items.push(v);
+ }
+ const needle=searchText(q),words=needle.split(" ").filter(w=>w.length>2&&!['les','des','une','tome'].includes(w));
+ const score=v=>{const title=searchText(v.title+" "+(v.subtitle||"")),authors=(v.authors||[]).map(searchText);return (title.includes(needle)?100:0)+(authors.some(a=>a===needle)?100:0)+words.filter(w=>title.split(" ").includes(w)).length*10+(v.authors||[]).some(a=>relatedAuthors.has(a))*40};
+ items.sort((a,b)=>score(b)-score(a)||editionYear(b.publishedDate)-editionYear(a.publishedDate));
+ if(!items.length&&responses.every(r=>r.status==="rejected")&&library.error)throw new Error("Google Books et Open Library sont inaccessibles. Réessaie dans un instant.");
+ const sources=[...new Set(items.map(v=>v.source))];return {source:sources.join(" + ")||"Google Books + Open Library",items};
 }
 function editionYear(value){return Number((String(value||"").match(/\b(?:1[0-9]{3}|20[0-9]{2})\b/)||[])[0])||0}
 function frenchEditionItems(entries,work){
